@@ -24,12 +24,69 @@ Le `Dockerfile` est à la racine, donc Render détecte seul l'environnement Dock
 
 ## 2. Créer la base PostgreSQL
 
-1. Dans le tableau de bord Render, `New +` puis `Postgres`.
+La base n'est pas obligatoirement hébergée sur Render. Deux options, comparées ici
+sur les seuls plans gratuits.
+
+| Critère | Render Postgres | Supabase |
+|---|---|---|
+| Durée de vie | expire 30 jours après création, puis 14 jours de grâce avant suppression des données | pas d'expiration, le projet est seulement mis en pause après une période d'inactivité |
+| Réactivation | impossible sans passer à un plan payant | manuelle depuis le tableau de bord, sans perte de données |
+| Stockage | 1 Go | 500 Mo |
+| Sauvegardes | aucune sur le plan gratuit | aucune sur le plan gratuit |
+| Nombre | une seule base par espace de travail | deux projets |
+| Latence depuis Render | réseau privé interne, très faible | via Internet, plus élevée |
+
+**Supabase est recommandé ici.** La suppression automatique au bout de trente jours
+côté Render ferait perdre la base en pleine année scolaire, alors qu'une pause
+Supabase se rattrape en un clic.
+
+### Option retenue : Supabase
+
+1. Aller sur `supabase.com/dashboard` et se connecter, le compte GitHub suffit.
+2. `New project`, puis choisir l'organisation.
+3. Nommer le projet, par exemple `mutuelle-mobile`.
+4. Générer le mot de passe de la base et **le conserver immédiatement**. Il n'est
+   plus affiché ensuite, et il faut le réinitialiser dans
+   `Project Settings` puis `Database` en cas de perte.
+5. Choisir la région la plus proche, `Central EU (Frankfurt)` depuis le Cameroun.
+6. Créer, puis attendre la fin du provisionnement.
+7. Cliquer sur `Connect` en haut de la page du projet, et choisir **`Session pooler`**.
+
+Le choix du mode de connexion est déterminant. La connexion directe de Supabase
+n'est joignable qu'en IPv6 sur le plan gratuit, or Render sort en IPv4, donc elle
+échouerait. Le pooler partagé est en IPv4 sur tous les plans. Il faut le **mode
+session** et non le mode transaction, car ce dernier ne gère pas les requêtes
+préparées, dont Hibernate se sert.
+
+La chaîne affichée a cette forme :
+
+```
+postgresql://postgres.[PROJECT-REF]:[MOT-DE-PASSE]@[HOTE-POOLER]:5432/postgres
+```
+
+Elle se découpe ainsi dans les variables attendues par l'application :
+
+| Variable | Valeur à relever |
+|---|---|
+| `PGHOST` | l'hôte du pooler |
+| `PGPORT` | `5432` |
+| `PGDATABASE` | `postgres` |
+| `PGUSER` | `postgres.[PROJECT-REF]` |
+| `PGPASSWORD` | le mot de passe de la base |
+
+Aucune modification du code n'est nécessaire, `application-prod.properties`
+reconstruisant déjà l'URL JDBC à partir de ces cinq variables. Le pilote
+PostgreSQL négocie TLS de lui-même, ce que Supabase exige.
+
+### Option alternative : Render Postgres
+
+1. Dans le tableau de bord Render, `New +` puis `Postgres`, ou directement
+   `dashboard.render.com/new/database`.
 2. Renseigner le nom, par exemple `mutuelle-db`.
 3. Choisir la région la plus proche, `Frankfurt (EU Central)` depuis le Cameroun.
 4. Plan `Free`.
-5. Créer, puis ouvrir la page de la base et relever dans `Connections` :
-   `Hostname`, `Port`, `Database`, `Username`, `Password`.
+5. Créer, puis relever les identifiants dans le menu `Connect` en haut à droite de
+   la page de la base.
 
 Prendre le **hostname interne**, celui sans suffixe public, et non l'externe. La
 connexion interne est plus rapide et dispense de TLS. Elle n'est utilisable que si
@@ -41,7 +98,8 @@ le service web est créé dans la **même région** que la base.
 2. Connecter le compte GitHub et autoriser l'accès au dépôt `mutuelle-back`.
 3. Sélectionner `steve20400/mutuelle-back`, branche `main`.
 4. `Language` ou `Runtime` doit afficher `Docker`. Laisser le répertoire racine vide.
-5. Région : **la même que la base de données**.
+5. Région : `Frankfurt (EU Central)`. Si la base est sur Render, cette région doit
+   impérativement être la même que la sienne, sinon le hostname interne ne répond pas.
 6. Plan `Free`.
 7. Dans `Advanced`, renseigner `Health Check Path` avec `/actuator/health`.
    Ce chemin est déjà public dans `SecurityConfig`, donc il répond sans jeton.
@@ -53,10 +111,10 @@ le service web est créé dans la **même région** que la base.
 | Variable | Valeur |
 |---|---|
 | `SPRING_PROFILES_ACTIVE` | `prod` |
-| `PGHOST` | hostname interne de la base |
+| `PGHOST` | hôte du pooler Supabase, ou hostname interne si la base est sur Render |
 | `PGPORT` | `5432` |
-| `PGDATABASE` | nom de la base |
-| `PGUSER` | utilisateur de la base |
+| `PGDATABASE` | `postgres` sur Supabase, sinon le nom de la base |
+| `PGUSER` | `postgres.[PROJECT-REF]` sur Supabase, sinon l'utilisateur de la base |
 | `PGPASSWORD` | mot de passe de la base |
 | `JWT_SECRET` | chaîne aléatoire longue, au moins 32 caractères |
 | `JWT_ACCESS_EXPIRATION` | `9000000000` |
@@ -96,8 +154,12 @@ La documentation interactive de l'API est accessible sur `/swagger-ui/index.html
 
 - Le service s'endort après quinze minutes sans trafic. Le réveil prend environ
   cinquante secondes, ce qui se voit sur le premier appel depuis l'application.
-- Les bases PostgreSQL gratuites de Render sont supprimées au bout de trente jours.
-  Prévoir une sauvegarde par `pg_dump` ou le passage à un plan payant avant l'échéance.
+- Les sept cent cinquante heures d'instance gratuites par mois sont partagées par
+  tout l'espace de travail. Au-delà, les services gratuits sont suspendus jusqu'au
+  mois suivant.
+- Si la base est restée sur Render, elle expire trente jours après sa création, avec
+  quatorze jours de grâce avant suppression définitive des données. Aucune sauvegarde
+  n'est fournie sur ce plan, donc prévoir un `pg_dump` régulier.
 - Les journaux sont dans l'onglet `Logs`. En cas d'arrêt immédiat, chercher
   `OutOfMemoryError` ou un échec de connexion à la base.
 
