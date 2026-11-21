@@ -1,0 +1,109 @@
+name: Build et demarrage du backend
+
+# Verifie trois choses, entierement sur les serveurs de GitHub :
+#   1. le projet compile avec le meme JDK que l'image Docker,
+#   2. l'application demarre reellement sur PostgreSQL et cree son schema,
+#   3. l'image Docker se construit, ce qui est exactement ce que fait Render.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+
+jobs:
+  build-et-demarrage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: mutuelle_ci
+          POSTGRES_USER: mutuelle_ci
+          POSTGRES_PASSWORD: mutuelle_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mutuelle_ci -d mutuelle_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    steps:
+      - name: Recuperer le code
+        uses: actions/checkout@v4
+
+      - name: Installer le JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+
+      - name: Compiler le jar
+        run: mvn -B -DskipTests package
+
+      - name: Demarrer l'application sur PostgreSQL
+        env:
+          SPRING_PROFILES_ACTIVE: prod
+          PGHOST: localhost
+          PGPORT: 5432
+          PGDATABASE: mutuelle_ci
+          PGUSER: mutuelle_ci
+          PGPASSWORD: mutuelle_ci
+          JWT_SECRET: valeur-de-test-uniquement-pour-l-integration-continue
+          JWT_ACCESS_EXPIRATION: 9000000000
+          JWT_REFRESH_EXPIRATION: 604800000
+          SPRING_MAIL_USERNAME: ci@example.invalid
+          SPRING_MAIL_PASSWORD: mot-de-passe-factice
+          PORT: 8080
+        run: |
+          java -jar target/*.jar > demarrage.log 2>&1 &
+          echo $! > app.pid
+          echo "Attente de la reponse de /actuator/health pendant 180 secondes au maximum"
+          for i in $(seq 1 60); do
+            etat=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/actuator/health || true)
+            if [ "$etat" = "200" ]; then
+              echo "Application demarree apres environ $((i * 3)) secondes"
+              curl -s http://localhost:8080/actuator/health
+              echo
+              exit 0
+            fi
+            if ! kill -0 "$(cat app.pid)" 2>/dev/null; then
+              echo "::error::Le processus s'est arrete avant de repondre"
+              exit 1
+            fi
+            sleep 3
+          done
+          echo "::error::Delai depasse, l'application n'a jamais repondu"
+          exit 1
+
+      - name: Verifier que le schema a bien ete cree
+        if: success()
+        env:
+          PGPASSWORD: mutuelle_ci
+        run: |
+          echo "Tables creees par Hibernate :"
+          psql -h localhost -U mutuelle_ci -d mutuelle_ci -c "\dt" | tail -n +2
+          nb=$(psql -h localhost -U mutuelle_ci -d mutuelle_ci -tAc "select count(*) from information_schema.tables where table_schema='public'")
+          echo "Nombre de tables : $nb"
+          if [ "$nb" -lt 10 ]; then
+            echo "::error::Trop peu de tables creees, le mapping des entites a probablement echoue"
+            exit 1
+          fi
+          echo "Comptes crees par DataInitializer :"
+          psql -h localhost -U mutuelle_ci -d mutuelle_ci -c "select email, role from auth_users order by email"
+
+      - name: Journal de demarrage en cas d'echec
+        if: failure()
+        run: tail -120 demarrage.log || true
+
+      - name: Arreter l'application
+        if: always()
+        run: kill "$(cat app.pid)" 2>/dev/null || true
+
+      - name: Construire l'image Docker comme le fait Render
+        run: docker build -t mutuelle-back:ci .
