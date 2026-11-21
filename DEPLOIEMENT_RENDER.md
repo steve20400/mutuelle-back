@@ -143,8 +143,46 @@ openssl rand -base64 48
 ## 5. Premier déploiement
 
 Lancer `Create Web Service`. Le build Maven dans Docker prend plusieurs minutes
-sur le plan gratuit. Les tables sont créées automatiquement au premier démarrage,
-`spring.jpa.hibernate.ddl-auto=update` étant actif en profil `prod`.
+sur le plan gratuit.
+
+### Aucune migration à exécuter
+
+Le projet ne déclare ni Flyway ni Liquibase. Le schéma est donc créé par Hibernate
+au premier démarrage, `spring.jpa.hibernate.ddl-auto=update` étant actif en profil
+`prod`. Il n'y a aucune étape de migration manuelle avant le déploiement.
+
+Les quelques `columnDefinition` des entités sont compatibles PostgreSQL, et les
+identifiants en `GenerationType.IDENTITY` sont traduits en colonnes d'identité.
+
+### Ne pas activer l'initialisation SQL
+
+`src/main/resources/data.sql` est écrit pour MySQL : il utilise `INSERT IGNORE` et
+`FROM dual`, deux constructions qui n'existent pas en PostgreSQL. Ce fichier ne
+s'exécute pas, car Spring Boot réserve `data.sql` aux bases embarquées tant que
+`spring.sql.init.mode` n'est pas défini.
+
+Il ne faut donc surtout pas ajouter `spring.sql.init.mode=always`, qui ferait
+échouer le démarrage sur PostgreSQL.
+
+### Comptes créés automatiquement
+
+`config/DataInitializer.java` est un `CommandLineRunner` actif dans tous les profils.
+Il crée au premier démarrage, si les adresses n'existent pas déjà, quatre comptes
+partageant le mot de passe `admin123` :
+
+| Adresse | Rôle |
+|---|---|
+| `superadmin@mutuelle.com` | super administrateur |
+| `admin@mutuelle.com` | administrateur |
+| `president@mutuelle.com` | président |
+| `tresorier@mutuelle.com` | trésorier |
+
+L'opération est idempotente, les redémarrages ne créent pas de doublons. Aucun
+endpoint public d'inscription n'existe, `AuthController` n'exposant que `/auth/login`,
+`/auth/refresh` et `/auth/logout`, donc ces comptes sont le seul point d'entrée.
+
+Sur un déploiement joignable publiquement, ces identifiants par défaut sont connus
+de quiconque lit ce dépôt. Les changer avant toute mise en service réelle.
 
 Vérifications une fois le service en ligne :
 
