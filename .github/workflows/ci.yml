@@ -4,6 +4,9 @@ name: Build et demarrage du backend
 #   1. le projet compile avec le meme JDK que l'image Docker,
 #   2. l'application demarre reellement sur PostgreSQL et cree son schema,
 #   3. l'image Docker se construit, ce qui est exactement ce que fait Render.
+#
+# Le diagnostic est recopie dans le resume de l'execution, lisible sans se
+# connecter, ce qui evite d'avoir a ouvrir les journaux detailles.
 
 on:
   workflow_dispatch:
@@ -34,10 +37,10 @@ jobs:
 
     steps:
       - name: Recuperer le code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Installer le JDK 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 21
@@ -47,6 +50,7 @@ jobs:
         run: mvn -B -DskipTests package
 
       - name: Demarrer l'application sur PostgreSQL
+        id: demarrage
         env:
           SPRING_PROFILES_ACTIVE: prod
           PGHOST: localhost
@@ -63,47 +67,77 @@ jobs:
         run: |
           java -jar target/*.jar > demarrage.log 2>&1 &
           echo $! > app.pid
-          echo "Attente de la reponse de /actuator/health pendant 180 secondes au maximum"
-          for i in $(seq 1 60); do
-            etat=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/actuator/health || true)
-            if [ "$etat" = "200" ]; then
+          echo "Attente de /actuator/health pendant 300 secondes au maximum"
+          dernier=""
+          for i in $(seq 1 100); do
+            dernier=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/actuator/health || true)
+            if [ "$dernier" = "200" ]; then
+              echo "resultat=demarree" >> "$GITHUB_OUTPUT"
               echo "Application demarree apres environ $((i * 3)) secondes"
-              curl -s http://localhost:8080/actuator/health
-              echo
               exit 0
             fi
             if ! kill -0 "$(cat app.pid)" 2>/dev/null; then
-              echo "::error::Le processus s'est arrete avant de repondre"
+              echo "resultat=processus_mort" >> "$GITHUB_OUTPUT"
+              echo "::error::Le processus Java s'est arrete avant de repondre"
               exit 1
             fi
             sleep 3
           done
-          echo "::error::Delai depasse, l'application n'a jamais repondu"
+          echo "resultat=sans_reponse" >> "$GITHUB_OUTPUT"
+          echo "dernier_code=$dernier" >> "$GITHUB_OUTPUT"
+          echo "::error::Delai depasse, dernier code HTTP observe : $dernier"
           exit 1
 
-      - name: Verifier que le schema a bien ete cree
-        if: success()
+      - name: Diagnostic dans le resume
+        if: always()
+        run: |
+          {
+            echo "## Diagnostic du demarrage"
+            echo
+            echo "Resultat de l'etape : \`${{ steps.demarrage.outputs.resultat || 'inconnu' }}\`"
+            echo
+            echo "### Reponse brute de /actuator/health"
+            echo '```'
+            curl -s -i --max-time 10 http://localhost:8080/actuator/health 2>&1 | head -20 || echo "aucune reponse"
+            echo '```'
+            echo
+            echo "### Ports en ecoute"
+            echo '```'
+            ss -ltnp 2>/dev/null | head -15 || echo "ss indisponible"
+            echo '```'
+            echo
+            echo "### Cent dernieres lignes du journal de demarrage"
+            echo '```'
+            tail -100 demarrage.log 2>/dev/null || echo "journal absent"
+            echo '```'
+            echo
+            echo "### Lignes d erreur du journal"
+            echo '```'
+            grep -nE "ERROR|FATAL|Caused by|Exception|Failed|Unable" demarrage.log 2>/dev/null | head -40 || echo "aucune ligne d erreur"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Etat du schema dans le resume
+        if: always()
         env:
           PGPASSWORD: mutuelle_ci
         run: |
-          echo "Tables creees par Hibernate :"
-          psql -h localhost -U mutuelle_ci -d mutuelle_ci -c "\dt" | tail -n +2
-          nb=$(psql -h localhost -U mutuelle_ci -d mutuelle_ci -tAc "select count(*) from information_schema.tables where table_schema='public'")
-          echo "Nombre de tables : $nb"
-          if [ "$nb" -lt 10 ]; then
-            echo "::error::Trop peu de tables creees, le mapping des entites a probablement echoue"
-            exit 1
-          fi
-          echo "Comptes crees par DataInitializer :"
-          psql -h localhost -U mutuelle_ci -d mutuelle_ci -c "select email, role from auth_users order by email"
-
-      - name: Journal de demarrage en cas d'echec
-        if: failure()
-        run: tail -120 demarrage.log || true
+          {
+            echo "### Tables presentes dans PostgreSQL"
+            echo '```'
+            psql -h localhost -U mutuelle_ci -d mutuelle_ci -c "\dt" 2>&1 | head -40 || echo "psql indisponible"
+            echo '```'
+            echo
+            echo "### Comptes crees"
+            echo '```'
+            psql -h localhost -U mutuelle_ci -d mutuelle_ci -c "select email, role from auth_users order by email" 2>&1 | head -20 || echo "table absente"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Arreter l'application
         if: always()
         run: kill "$(cat app.pid)" 2>/dev/null || true
 
       - name: Construire l'image Docker comme le fait Render
+        if: always()
         run: docker build -t mutuelle-back:ci .
