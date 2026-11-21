@@ -61,8 +61,12 @@ préparées, dont Hibernate se sert.
 La chaîne affichée a cette forme :
 
 ```
-postgresql://postgres.[PROJECT-REF]:[MOT-DE-PASSE]@[HOTE-POOLER]:5432/postgres
+postgresql://postgres.[PROJECT-REF]:[MOT-DE-PASSE]@aws-[INDEX]-[REGION].pooler.supabase.com:5432/postgres
 ```
+
+L'hôte doit être copié depuis la boîte de dialogue `Connect` et ne peut pas être
+reconstitué à partir de la région. L'indice qui le précède est un numéro de grappe
+de pooler, et une même région peut en compter plusieurs.
 
 Elle se découpe ainsi dans les variables attendues par l'application :
 
