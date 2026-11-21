@@ -126,6 +126,19 @@ le service web est créé dans la **même région** que la base.
 | `SPRING_MAIL_USERNAME` | adresse Gmail d'envoi |
 | `SPRING_MAIL_PASSWORD` | mot de passe d'application Gmail |
 | `JAVA_OPTS` | `-Xms128m -Xmx400m` |
+| `MANAGEMENT_HEALTH_MAIL_ENABLED` | `false` |
+
+La dernière variable n'est pas optionnelle. Le projet déclare
+`spring-boot-starter-mail`, ce qui pousse l'actuateur à ajouter un indicateur de
+santé SMTP. Cet indicateur ouvre une connexion vers Gmail à chaque appel de
+`/actuator/health`. S'il échoue, pour un mot de passe d'application erroné ou un
+refus de Gmail, l'état global passe à `DOWN` et le point de santé répond `503`
+alors que l'application fonctionne parfaitement.
+
+Render interpréterait ce `503` comme un service en panne et le redémarrerait en
+boucle. Cette mise en échec a été observée sur l'intégration continue avant tout
+déploiement. La désactivation ne touche que la surveillance, l'envoi de courriels
+par l'application reste inchangé.
 
 Ne pas définir `PORT`. Render l'injecte lui-même et
 `application-prod.properties` le lit déjà via `server.port=${PORT:8080}`.

@@ -64,6 +64,11 @@ jobs:
           SPRING_MAIL_USERNAME: ci@example.invalid
           SPRING_MAIL_PASSWORD: mot-de-passe-factice
           PORT: 8080
+          # Le demarreur spring-boot-starter-mail fait ajouter un indicateur de
+          # sante SMTP par l'actuateur. Avec des identifiants factices il echoue,
+          # l'etat global passe a DOWN et /actuator/health renvoie 503 alors que
+          # l'application fonctionne. On le desactive pour ne tester que l'appli.
+          MANAGEMENT_HEALTH_MAIL_ENABLED: false
         run: |
           java -jar target/*.jar > demarrage.log 2>&1 &
           echo $! > app.pid
